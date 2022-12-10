@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 import tab1
 import tab2
 import tab3
+import db
 
 external_stylesheets = ['https://codepen.io/chriddyp/pen/bWLwgP.css']
 USERNAME_PASSWORD = [['user','pass']]
@@ -24,123 +25,95 @@ app.layout = html.Div([html.Div([dcc.Tabs(id='tabs',value='tab-1',children=[
                     ],style={'width':'80%','margin':'auto'})],
                     style={'height':'100%'})
 
-class db:
-    def __init__(self):
-        self.transactions = db.transation_init()
-        self.cc = pd.read_csv(r'db\country_codes.csv',index_col=0)
-        self.customers = pd.read_csv(r'db\customers.csv',index_col=0)
-        self.prod_info = pd.read_csv(r'db\prod_cat_info.csv')
-    
-    @staticmethod
-    def transation_init():
-        transactions = pd.DataFrame()
-        src = r'db\transactions'
-        for filename in os.listdir(src):
-            transactions = transactions.append(pd.read_csv(os.path.join(src,filename),index_col=0))
 
-        def convert_dates(x):
-            try:
-                return dt.datetime.strptime(x,'%d-%m-%Y')
-            except:
-                return dt.datetime.strptime(x,'%d/%m/%Y')
 
-        transactions['tran_date'] = transactions['tran_date'].apply(lambda x: convert_dates(x))
+@app.callback(Output('tabs-content','children'),[Input('tabs','value')])
+def render_content(tab):
 
-        return transactions
+    if tab == 'tab-1':
+        return tab1.render_tab(df.merged)
+    elif tab == 'tab-2':
+        return tab2.render_tab(df.merged)
+    elif tab == 'tab-3':
+        return tab3.render_tab(df.merged)
 
-    def merge(self):
-        df = self.transactions.join(self.prod_info.drop_duplicates(subset=['prod_cat_code']).set_index('prod_cat_code')['prod_cat'],on='prod_cat_code',how='left')
-        df = df.join(self.prod_info.drop_duplicates(subset=['prod_sub_cat_code']).set_index('prod_sub_cat_code')['prod_subcat'],on='prod_subcat_code',how='left')
-        df = df.join(self.customers.join(self.cc,on='country_code').set_index('customer_Id'),on='cust_id')
-        self.merged = df
+## tab1 callbacks
+@app.callback(Output('bar-sales','figure'),[Input('sales-range','start_date'),Input('sales-range','end_date')])
 
-    @app.callback(Output('tabs-content','children'),[Input('tabs','value')])
-    def render_content(tab):
+def tab1_bar_sales(start_date,end_date):
 
-        if tab == 'tab-1':
-            return tab1.render_tab(df.merged)
-        elif tab == 'tab-2':
-            return tab2.render_tab(df.merged)
-        elif tab == 'tab-3':
-            return tab3.render_tab(df.merged)
+    truncated = df.merged[(df.merged['tran_date']>=start_date)&(df.merged['tran_date']<=end_date)]
+    grouped = truncated[truncated['total_amt']>0].groupby([pd.Grouper(key='tran_date',freq='M'),'Store_type'])['total_amt'].sum().round(2).unstack()
 
-    ## tab1 callbacks
-    @app.callback(Output('bar-sales','figure'),[Input('sales-range','start_date'),Input('sales-range','end_date')])
+    traces = []
+    for col in grouped.columns:
+        traces.append(go.Bar(x=grouped.index,y=grouped[col],name=col,hoverinfo='text',
+        hovertext=[f'{y/1e3:.2f}k' for y in grouped[col].values]))
 
-    def tab1_bar_sales(start_date,end_date):
+    data = traces
+    fig = go.Figure(data=data,layout=go.Layout(title='Przychody',barmode='stack',legend=dict(x=0,y=-0.5)))
 
-        truncated = df.merged[(df.merged['tran_date']>=start_date)&(df.merged['tran_date']<=end_date)]
-        grouped = truncated[truncated['total_amt']>0].groupby([pd.Grouper(key='tran_date',freq='M'),'Store_type'])['total_amt'].sum().round(2).unstack()
+    return fig
 
-        traces = []
-        for col in grouped.columns:
-            traces.append(go.Bar(x=grouped.index,y=grouped[col],name=col,hoverinfo='text',
-            hovertext=[f'{y/1e3:.2f}k' for y in grouped[col].values]))
+@app.callback(Output('choropleth-sales','figure'),[Input('sales-range','start_date'),Input('sales-range','end_date')])
+def tab1_choropleth_sales(start_date,end_date):
 
-        data = traces
-        fig = go.Figure(data=data,layout=go.Layout(title='Przychody',barmode='stack',legend=dict(x=0,y=-0.5)))
+    truncated = df.merged[(df.merged['tran_date']>=start_date)&(df.merged['tran_date']<=end_date)]
+    grouped = truncated[truncated['total_amt']>0].groupby('country')['total_amt'].sum().round(2)
 
-        return fig
+    trace0 = go.Choropleth(colorscale='Viridis',reversescale=True,locations=grouped.index,locationmode='country names',z = grouped.values, colorbar=dict(title='Sales'))
+    data = [trace0]
+    fig = go.Figure(data=data,layout=go.Layout(title='Mapa',geo=dict(showframe=False,projection={'type':'natural earth'})))
 
-    @app.callback(Output('choropleth-sales','figure'),[Input('sales-range','start_date'),Input('sales-range','end_date')])
-    def tab1_choropleth_sales(start_date,end_date):
+    return fig
 
-        truncated = df.merged[(df.merged['tran_date']>=start_date)&(df.merged['tran_date']<=end_date)]
-        grouped = truncated[truncated['total_amt']>0].groupby('country')['total_amt'].sum().round(2)
+## tab2 callbacks
+@app.callback(Output('barh-prod-subcat','figure'),[Input('prod_dropdown','value')])
+def tab2_barh_prod_subcat(chosen_cat):
 
-        trace0 = go.Choropleth(colorscale='Viridis',reversescale=True,locations=grouped.index,locationmode='country names',z = grouped.values, colorbar=dict(title='Sales'))
-        data = [trace0]
-        fig = go.Figure(data=data,layout=go.Layout(title='Mapa',geo=dict(showframe=False,projection={'type':'natural earth'})))
+    grouped = df.merged[(df.merged['total_amt']>0)&(df.merged['prod_cat']==chosen_cat)].pivot_table(index='prod_subcat',columns='Gender',values='total_amt',aggfunc='sum').assign(_sum=lambda x: x['F']+x['M']).sort_values(by='_sum').round(2)
 
-        return fig
+    traces = []
+    for col in ['F','M']:
+        traces.append(go.Bar(x=grouped[col],y=grouped.index,orientation='h',name=col))
 
-    ## tab2 callbacks
-    @app.callback(Output('barh-prod-subcat','figure'),[Input('prod_dropdown','value')])
-    def tab2_barh_prod_subcat(chosen_cat):
+    data = traces
+    fig = go.Figure(data=data,layout=go.Layout(barmode='stack',margin={'t':20,}))
+    return fig
 
-        grouped = df.merged[(df.merged['total_amt']>0)&(df.merged['prod_cat']==chosen_cat)].pivot_table(index='prod_subcat',columns='Gender',values='total_amt',aggfunc='sum').assign(_sum=lambda x: x['F']+x['M']).sort_values(by='_sum').round(2)
+## tab3 callbacks
+@app.callback(Output('bar-stores','figure'),[Input('stores-range','start_date'),Input('stores-range','end_date')])
+def tab3_bar_stores(start_date,end_date):
 
-        traces = []
-        for col in ['F','M']:
-            traces.append(go.Bar(x=grouped[col],y=grouped.index,orientation='h',name=col))
+    truncated = df.merged[(df.merged['tran_date']>=start_date)&(df.merged['tran_date']<=end_date)]
+    truncated['day']=truncated['tran_date'].dt.day_name()
+    grouped = truncated[truncated['total_amt']>0].groupby(['day','Store_type'])['total_amt'].sum().round(2).unstack()
 
-        data = traces
-        fig = go.Figure(data=data,layout=go.Layout(barmode='stack',margin={'t':20,}))
-        return fig
+    traces = []
+    for col in grouped.columns:
+        traces.append(go.Bar(x=grouped.index,y=grouped[col],name=col,hoverinfo='text',
+        hovertext=[f'{y/1e3:.2f}k' for y in grouped[col].values]))
 
-    ## tab3 callbacks
-    @app.callback(Output('bar-stores','figure'),[Input('stores-range','start_date'),Input('stores-range','end_date')])
-    def tab3_bar_stores(start_date,end_date):
+    data = traces
 
-        truncated = df.merged[(df.merged['tran_date']>=start_date)&(df.merged['tran_date']<=end_date)]
-        truncated['day']=truncated['tran_date'].dt.day_name()
-        grouped = truncated[truncated['total_amt']>0].groupby(['day','Store_type'])['total_amt'].sum().round(2).unstack()
+    fig = go.Figure(data=data,layout=go.Layout(title='Przychody/Dzień tygodnia',barmode='stack',legend=dict(x=0,y=-0.5)))
 
-        traces = []
-        for col in grouped.columns:
-            traces.append(go.Bar(x=grouped.index,y=grouped[col],name=col,hoverinfo='text',
-            hovertext=[f'{y/1e3:.2f}k' for y in grouped[col].values]))
+    return fig
 
-        data = traces
+@app.callback(Output('barh-stores-subcat','figure'),[Input('stores-range','start_date'),Input('stores-range','end_date')])
+def tab3_barh_stores_subcat(start_date,end_date):
 
-        fig = go.Figure(data=data,layout=go.Layout(title='Przychody/Dzień tygodnia',barmode='stack',legend=dict(x=0,y=-0.5)))
+    grouped = df.merged[(df.merged['total_amt']>0)&(df.merged['tran_date']>=start_date)&(df.merged['tran_date']<=end_date)].pivot_table(index='Store_type',columns='Gender',values='total_amt',aggfunc='sum').assign(_sum=lambda x: x['F']+x['M']).sort_values(by='_sum').round(2)
 
-        return fig
+    traces = []
+    for col in ['F','M']:
+        traces.append(go.Bar(x=grouped[col],y=grouped.index,orientation='h',name=col))
 
-    @app.callback(Output('barh-stores-subcat','figure'),[Input('stores-range','start_date'),Input('stores-range','end_date')])
-    def tab2_barh_stores_subcat(start_date,end_date):
-
-        grouped = df.merged[(df.merged['total_amt']>0)&(df.merged['tran_date']>=start_date)&(df.merged['tran_date']<=end_date)].pivot_table(index='Store_type',columns='Gender',values='total_amt',aggfunc='sum').assign(_sum=lambda x: x['F']+x['M']).sort_values(by='_sum').round(2)
-
-        traces = []
-        for col in ['F','M']:
-            traces.append(go.Bar(x=grouped[col],y=grouped.index,orientation='h',name=col))
-
-        data = traces
-        fig = go.Figure(data=data,layout=go.Layout(title='Przychody/Kanał Sprzedaży(Płeć)',barmode='stack',margin={'t':80,}))
-        return fig
+    data = traces
+    fig = go.Figure(data=data,layout=go.Layout(title='Przychody/Kanał Sprzedaży(Płeć)',barmode='stack',margin={'t':80,}))
+    return fig
 
 if __name__ == '__main__':
-    df = db()
+    df = db.db()
     df.merge()
     app.run_server(debug=True)    
